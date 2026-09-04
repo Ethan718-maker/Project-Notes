@@ -1,0 +1,3 @@
+m,n,N_nodes,hole_ratio,topology,method,set_size,coverage,time_sec
+20,20,400,0.0,supergrid,ILP,49,1.0,0.13134419987909496
+20,20,400,0.0,supergrid,Greedy,60,1.0,0.024897699942812324

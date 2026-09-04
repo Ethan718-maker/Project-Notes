@@ -1,0 +1,2 @@
+﻿model,m,n,hole_ratio,N_nodes,ilp_size,ilp_coverage,ilp_status,ilp_status_class,ilp_optimal,ilp_success,ilp_attempted,ilp_fallback,ilp_time_sec,greedy_size,greedy_coverage,gnn_size,gnn_coverage,completion_mode,gap_greedy_vs_ilp_ref,gap_gnn_vs_ilp_ref,ilp_gap_ref,figure_path
+GIN,30,30,0.24222222222222223,682,105,1.0,Optimal,OPTIMAL,1,1,1,0,0.2140187001787126,125,1.0,125,1.0,beam,20,20,ILP_OPT,D:\Dom-SupergridGrid_v38\4Results\Figures_size_all_holes\compare_3methods_GIN_20260902_122941.png

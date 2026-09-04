@@ -1,0 +1,2 @@
+﻿model,m,n,hole_ratio,N_nodes,ilp_size,ilp_coverage,ilp_status,ilp_status_class,ilp_optimal,ilp_success,ilp_attempted,ilp_fallback,ilp_time_sec,greedy_size,greedy_coverage,gnn_size,gnn_coverage,completion_mode,gap_greedy_vs_ilp_ref,gap_gnn_vs_ilp_ref,ilp_gap_ref,figure_path
+TRANSFORMER,30,30,0.30000000000000004,630,109,1.0,Optimal,OPTIMAL,1,1,1,0,1.773724399972707,135,1.0,134,1.0,beam,26,25,ILP_OPT,D:\Dom-SupergridGrid_v38\4Results\Figures_size_all_holes\compare_3methods_TRANSFORMER_20260902_142555.png

@@ -1,4 +1,3 @@
-8
 # =========================================================
 #  Dom-SupergridGrid v38_GCN-GATv2-SAGE-GIN-TRANSFORMER-GRAPHORMER-GPSCONV
 #  Supergrid / Grid Domination
@@ -5609,6 +5608,7 @@ def run_experiment_multi_size_and_holes():
                     build_time = time.perf_counter() - t0
 
                     N = len(adj)
+                    # 1. 產生 29 維基礎特徵
                     data = build_full_features(
                         m, n,
                         adj,
@@ -5616,6 +5616,11 @@ def run_experiment_multi_size_and_holes():
                         pe_dim=8,
                         rwe_dim=16
                     ).to(GLOBAL_DEVICE)
+                    
+                    # 2. 若模型需要 34 維 (29+5)，自動 Padding 5 個 0 補齊維度
+                    if data.x.size(1) == 29:
+                        rl_padding = torch.zeros((data.x.size(0), 5), dtype=data.x.dtype, device=data.x.device)
+                        data.x = torch.cat([data.x, rl_padding], dim=1)
 
                     # --- ILP baseline ---
                     t1 = time.perf_counter()
@@ -5708,7 +5713,6 @@ def run_experiment_multi_size_and_holes():
     print("\n✔ 實驗完成，CSV 已輸出到：", csv_path)
 
 
-"""
 def run_experiment_multi_size_and_holes():
     global GLOBAL_MODELS, GLOBAL_DEVICE
 
@@ -5754,13 +5758,20 @@ def run_experiment_multi_size_and_holes():
                 build_time = time.perf_counter() - t0
 
                 N = len(adj)
+                # 修正特徵建構，確保產生 34 維特徵以符合模型權重
                 data = build_full_features(
                     m, n,
                     adj,
                     coords=coords,
                     pe_dim=8,
-                    rwe_dim=16
+                    rwe_dim=16,
                 ).to(GLOBAL_DEVICE)
+
+                # 2. 自動 Padding 補齊至 34 維 (29 + 5) 以匹配載入的模型權重
+                if data.x.size(1) < 34:
+                    pad_dim = 34 - data.x.size(1)
+                    rl_padding = torch.zeros((data.x.size(0), pad_dim), dtype=data.x.dtype, device=data.x.device)
+                    data.x = torch.cat([data.x, rl_padding], dim=1)
 
                 t1 = time.perf_counter()
                 try:
@@ -5832,11 +5843,10 @@ def run_experiment_multi_size_and_holes():
 
                     print(
                         f"  - {method_name}: "
-                        f"|D|={len(S_gg)}, time={eval_time:.3f}s"#, coverage={cov:.3f}
+                        f"|D|={len(S_gg)}, time={eval_time:.3f}s"
                     )
 
     print("\n✔ 實驗完成，CSV 已輸出到：", csv_path)
-"""
 
 def menu_set_topology():
     global GRAPH_TOPOLOGY
@@ -6054,12 +6064,16 @@ def plot_two_big_figures_S_time_C_smart(combos, sizes, holes, methods_set):
     print(f"[Saved] {filename}")
     plt.close()
 
+def round_to_clean_hole_ratio(val: float, step: float = 0.05) -> float:
+    """將挖洞率平滑化至最近的 0.05 步長 (如 0.38 -> 0.40)"""
+    return round(round(val / step) * step, 2)
+
 def analyze_and_plot_experiment_results():
     """
     讀取 experiment_results/ 內最新的實驗 CSV，自動：
-    1) 建立排名表 (依 |D| 由小到大, |D|為支配集 : 此功能目前不製作)
-    2) 輸出 summary CSV
-    3) 產生數張比較圖 (heatmap + 折線圖) : heapmap 不做, 每個方法固定mxn下, 依hole rate vs |S| 來製作折線圖
+    1) 計算各方法在同尺寸與挖洞率下的平均 |D| 與執行時間
+    2) 輸出 summary CSV (已依要求移除 coverage 欄位)
+    3) 產生各尺寸下 Hole Ratio vs |D| 與 Time 的折線圖 (已優化標註重疊與 X 軸對齊)
     """
     if not os.path.isdir(EXPERIMENT_RESULTS_DIR):
         print(f"❌ 找不到實驗資料夾：{EXPERIMENT_RESULTS_DIR}")
@@ -6067,7 +6081,7 @@ def analyze_and_plot_experiment_results():
 
     csv_files = [
         f for f in os.listdir(EXPERIMENT_RESULTS_DIR)
-        if f.endswith(".csv")
+        if f.endswith(".csv") and not f.startswith("summary_")
     ]
     if not csv_files:
         print(f"❌ 在 {EXPERIMENT_RESULTS_DIR} 中找不到任何 CSV 結果檔。請先執行選單 10 產生實驗結果。")
@@ -6079,105 +6093,191 @@ def analyze_and_plot_experiment_results():
     print(f"✔ 將使用最新實驗檔案：{csv_path}")
 
     # 讀取 CSV
-    combos = {}   # key = (m,n,hole_ratio) -> list of dict
+    grouped_records = defaultdict(list)
     methods_set = set()
     sizes_set = set()
     hole_set = set()
 
-    with open(csv_path, "r", encoding="utf-8") as f:
+    with open(csv_path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
             try:
                 m = int(row["m"])
                 n = int(row["n"])
                 N_nodes = int(row.get("N_nodes", m * n))
-                hole_ratio = float(row["hole_ratio"])
-                method = row["method"]
-                set_size = float(row["set_size"])
-                coverage = float(row["coverage"])
-                time_sec = float(row.get("time_sec", 0.0))
+                
+                # 挖洞率自動平滑化四捨五入至 0.05
+                raw_hole = float(row.get("hole_ratio", row.get("hole", 0.0)))
+                hole_ratio = round_to_clean_hole_ratio(raw_hole, step=0.05)
+                
+                method = str(row.get("method", row.get("model", "Unknown")))
+                set_size = float(row.get("set_size", row.get("|D|", 0)))
+                time_sec = float(row.get("time_sec", row.get("time", 0.0)))
             except Exception as e:
                 print(f"[警告] 讀取某列失敗：{e} → 略過該列")
                 continue
 
-            key = (m, n, hole_ratio)
-            rec = {
-                "m": m,
-                "n": n,
+            key = (m, n, hole_ratio, method)
+            grouped_records[key].append({
                 "N_nodes": N_nodes,
-                "hole_ratio": hole_ratio,
-                "method": method,
                 "set_size": set_size,
-                "coverage": coverage,
-                "time_sec": time_sec,
-            }
-            combos.setdefault(key, []).append(rec)
+                "time_sec": time_sec
+            })
             methods_set.add(method)
             sizes_set.add((m, n))
             hole_set.add(hole_ratio)
 
-    if not combos:
+    if not grouped_records:
         print("❌ 沒有任何有效資料可供分析。")
         return
 
     sizes = sorted(list(sizes_set))
     holes = sorted(list(hole_set))
+    methods = sorted(list(methods_set))
 
-    print(f"✔ 共讀入 {len(combos)} 組 (size 支配數, hole_ratio 挖洞例) 實驗結果。")
+    print(f"✔ 共讀入 {len(grouped_records)} 組獨立配置實驗結果。")
     print(f"  - sizes = {sizes}")
     print(f"  - hole_ratios = {holes}")
-    print(f"  - methods = {sorted(list(methods_set))}")
+    print(f"  - methods = {methods}")
 
     # -----------------------------------------------------
-    # 1) 產生排名表並輸出 summary CSV
+    # 1) 計算平均值並輸出 summary CSV (無 coverage)
     # -----------------------------------------------------
     summary_rows = []
-    for (m, n, hole_ratio), recs in combos.items():
-        # 依 |S| 由小到大， time 由小到大 排序
-        recs_sorted = sorted(
-            recs,
-            key=lambda r: (r["set_size"], -r["coverage"], r["time_sec"])
-        )
-        for rank, r in enumerate(recs_sorted[:3], start=1):
-            summary_rows.append({
-                "m": m,
-                "n": n,
-                "N_nodes": r["N_nodes"],
-                "hole_ratio": hole_ratio,
-                "rank": rank,
-                "method": r["method"],
-                "set_size": r["set_size"],
-                "coverage": r["coverage"], #coverage 去掉此參數
-                "time_sec": r["time_sec"],
-            })
+    agg_combos = defaultdict(list) # 用於畫圖 (m, n, hole_ratio) -> dict of method stats
 
-    # 輸出 summary CSV
+    for (m, n, hole_ratio, method), recs in grouped_records.items():
+        avg_set_size = sum(r["set_size"] for r in recs) / len(recs)
+        avg_time = sum(r["time_sec"] for r in recs) / len(recs)
+        avg_nnodes = int(sum(r["N_nodes"] for r in recs) / len(recs))
+
+        rec_stat = {
+            "m": m,
+            "n": n,
+            "N_nodes": avg_nnodes,
+            "hole_ratio": hole_ratio,
+            "method": method,
+            "set_size": avg_set_size,
+            "time_sec": avg_time
+        }
+
+        summary_rows.append(rec_stat)
+        agg_combos[(m, n, hole_ratio)].append(rec_stat)
+
+    # 依 (m, n, hole_ratio, set_size, time_sec) 排序
+    summary_rows.sort(key=lambda x: (x["m"], x["n"], x["hole_ratio"], x["set_size"], x["time_sec"]))
+
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     summary_path = os.path.join(
         EXPERIMENT_RESULTS_DIR,
         f"summary_multiSize_multiHole_{ts}.csv"
     )
-    with open(summary_path, "w", newline="", encoding="utf-8") as f:
-        fieldnames = [
-            "m", "n", "N_nodes", "hole_ratio",
-            "rank", "method", "set_size", "coverage", "time_sec"#coverage 去掉此參數
-        ]
+    
+    with open(summary_path, "w", newline="", encoding="utf-8-sig") as f:
+        fieldnames = ["m", "n", "N_nodes", "hole_ratio", "method", "set_size", "time_sec"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for row in summary_rows:
-            writer.writerow(row)
+        for r in summary_rows:
+            writer.writerow({
+                "m": r["m"],
+                "n": r["n"],
+                "N_nodes": r["N_nodes"],
+                "hole_ratio": r["hole_ratio"],
+                "method": r["method"],
+                "set_size": round(r["set_size"], 2),
+                "time_sec": round(r["time_sec"], 4)
+            })
 
     print(f"✔ 已輸出 summary CSV：{summary_path}")
-    print("  排名規則：先比 |D| 較小，其次 coverage 較大，其次 time 較短。")#coverage 去掉此參數
 
     # -----------------------------------------------------
-    # heatmap & coverage graphs removed
+    # 2) 繪製折線圖 (以 hole_ratio vs |D| 與 Time 為主)
     # -----------------------------------------------------
-    plot_two_big_figures_S_time_C_smart(combos, sizes, holes, methods_set)
-    plot_all_methods_one_size_all_holes_two_subplots(combos, sizes, holes, methods_set)
+    dest_dir = os.path.join(EXPERIMENT_RESULTS_DIR, "Figures_size_all_holes")
+    os.makedirs(dest_dir, exist_ok=True)
+
+    style_map = {
+        "Greedy": ("#000000", "s", "--"),
+        "ILP": ("#D9534F", "o", "-"),
+        "TRANSFORMER_raw": ("#5CB85C", "^", "-."),
+        "TRANSFORMER+PruneGuidedGreedyLocalSwap+ILPpolish": ("#0275D8", "D", "-")
+    }
+
+    for (m, n) in sizes:
+        # 每一個尺寸建立一次畫布 (必須在 methods 迴圈之外)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5), dpi=300)
+
+        for meth in methods:
+            pts = []
+            for h in holes:
+                recs = agg_combos.get((m, n, h), [])
+                matched = [r for r in recs if r["method"] == meth]
+                if matched:
+                    pts.append((h, matched[0]["set_size"], matched[0]["time_sec"]))
+
+            if not pts:
+                continue
+
+            pts.sort(key=lambda x: x[0])
+            xs = [p[0] for p in pts]
+            ys_size = [p[1] for p in pts]
+            ys_time = [p[2] for p in pts]
+
+            color, marker, ls = style_map.get(meth, (None, "o", "-"))
+
+            # 繪製 |D| 圖 (左圖)
+            ax1.plot(xs, ys_size, label=meth, marker=marker, linestyle=ls, linewidth=1.8, markersize=6, color=color)
+            if len(ys_size) > 0:
+                indices = {0, len(ys_size) - 1, ys_size.index(max(ys_size)), ys_size.index(min(ys_size))}
+                for idx in indices:
+                    ax1.annotate(
+                        f"{ys_size[idx]:.1f}", 
+                        (xs[idx], ys_size[idx]), 
+                        textcoords="offset points", 
+                        xytext=(0, 6), 
+                        ha='center', 
+                        fontsize=8,
+                        alpha=0.85
+                    )
+
+            # 繪製 Time 圖 (右圖)
+            ax2.plot(xs, ys_time, label=meth, marker=marker, linestyle=ls, linewidth=1.8, markersize=6, color=color)
+            if len(ys_time) > 0:
+                indices = {0, len(ys_time) - 1, ys_time.index(max(ys_time)), ys_time.index(min(ys_time))}
+                for idx in indices:
+                    if ys_time[idx] >= 0.15: # 避開低於 0.15s 的重疊標註
+                        ax2.annotate(
+                            f"{ys_time[idx]:.2f}s", 
+                            (xs[idx], ys_time[idx]), 
+                            textcoords="offset points", 
+                            xytext=(0, 6), 
+                            ha='center', 
+                            fontsize=8,
+                            alpha=0.85
+                        )
+
+        # 設定圖表標題與軸標籤 (在所有方法都畫完之後)
+        ax1.set_title(f"|D| vs Hole Ratio [{m}x{n}]", fontsize=11, fontweight='bold')
+        ax1.set_xlabel("Hole Ratio", fontsize=10)
+        ax1.set_ylabel("|D| (Dominating Set Size)", fontsize=10)
+        ax1.grid(True, linestyle=":", alpha=0.6)
+
+        ax2.set_title(f"Computation Time vs Hole Ratio [{m}x{n}]", fontsize=11, fontweight='bold')
+        ax2.set_xlabel("Hole Ratio", fontsize=10)
+        ax2.set_ylabel("Time (seconds)", fontsize=10)
+        ax2.grid(True, linestyle=":", alpha=0.6)
+
+        # 圖例放在整體下方
+        handles, labels = ax1.get_legend_handles_labels()
+        fig.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, -0.12), ncol=2, frameon=True, fontsize=8)
+        plt.tight_layout()
+
+        out_fig_path = os.path.join(dest_dir, f"size_{m}x{n}_all_holes_clean.png")
+        plt.savefig(out_fig_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        print(f"✔ 已輸出圖表：{out_fig_path}")
+
     print("✔ 實驗結果分析與繪圖完成.")
-
-
 # =========================================================
 #  主選單
 # =========================================================
@@ -6278,11 +6378,20 @@ def plot_two_big_figures_S_time_C_smart(
         )
         plt.tight_layout()
 
+        # 安全取得全域變數，若未定義則使用預設值
+        m_val = globals().get('GLOBAL_M', 'all')
+        n_val = globals().get('GLOBAL_N', 'all')
+        hole_val = globals().get('GLOBAL_HOLE', None)
+        topo_val = globals().get('GLOBAL_TOPOLOGY', 'supergrid')
+        
+        hole_str = f"{hole_val:.2f}" if isinstance(hole_val, (int, float)) else "mixed"
+
         filename = (
             f"compare_{file_suffix}_"
-            f"m{GLOBAL_M}_n{GLOBAL_N}_h{(GLOBAL_HOLE if GLOBAL_HOLE is not None else 0):.2f}_"
-            f"{GLOBAL_TOPOLOGY}_{safe_title}.png"
+            f"m{m_val}_n{n_val}_h{hole_str}_"
+            f"{topo_val}_{safe_title}.png"
         )
+
         plt.savefig(os.path.join(dest_dir, filename), dpi=dpi)
         print(f"[Saved] {os.path.join(dest_dir, filename)}")
         plt.close()
